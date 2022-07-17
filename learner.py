@@ -12,40 +12,46 @@ class Learner(nn.Module):
 
     def __init__(self, image_size, bn_eps, bn_momentum, n_classes):
         super(Learner, self).__init__()
-        self.model = nn.ModuleDict({'features': nn.Sequential(OrderedDict([
-            ('conv1', nn.Conv2d(3, 32, 3, padding=1)),
-            ('norm1', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
-            ('relu1', nn.ReLU(inplace=False)),
-            ('pool1', nn.MaxPool2d(2)),
+        self.model = nn.ModuleDict(
+            {'features': nn.Sequential(
+                OrderedDict(
+                    [('conv1', nn.Conv2d(3, 32, 3, padding=1)),
+                    ('norm1', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
+                    ('relu1', nn.ReLU(inplace=False)),
+                    ('pool1', nn.MaxPool2d(2)), # half 1 time
 
-            ('conv2', nn.Conv2d(32, 32, 3, padding=1)),
-            ('norm2', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
-            ('relu2', nn.ReLU(inplace=False)),
-            ('pool2', nn.MaxPool2d(2)),
+                    ('conv2', nn.Conv2d(32, 32, 3, padding=1)),
+                    ('norm2', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
+                    ('relu2', nn.ReLU(inplace=False)),
+                    ('pool2', nn.MaxPool2d(2)), # half 2 time
 
-            ('conv3', nn.Conv2d(32, 32, 3, padding=1)),
-            ('norm3', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
-            ('relu3', nn.ReLU(inplace=False)),
-            ('pool3', nn.MaxPool2d(2)),
+                    ('conv3', nn.Conv2d(32, 32, 3, padding=1)),
+                    ('norm3', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
+                    ('relu3', nn.ReLU(inplace=False)),
+                    ('pool3', nn.MaxPool2d(2)), # half 3 time
 
-            ('conv4', nn.Conv2d(32, 32, 3, padding=1)),
-            ('norm4', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
-            ('relu4', nn.ReLU(inplace=False)),
-            ('pool4', nn.MaxPool2d(2))]))
+                    ('conv4', nn.Conv2d(32, 32, 3, padding=1)),
+                    ('norm4', nn.BatchNorm2d(32, bn_eps, bn_momentum)),
+                    ('relu4', nn.ReLU(inplace=False)),
+                    ('pool4', nn.MaxPool2d(2)) # half 4 time
+                    ]
+                )
+            )
         })
 
-        clr_in = image_size // 2**4
+        clr_in = image_size // 2**4 # feature map size
         self.model.update({'cls': nn.Linear(32 * clr_in * clr_in, n_classes)})
         self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, x):
         x = self.model.features(x)
-        x = torch.reshape(x, [x.size(0), -1])
+        x = torch.reshape(x, [x.size(0), -1]) # just flatten the feature map
         outputs = self.model.cls(x)
-        return outputs
+        return outputs # class prediction
 
     def get_flat_params(self):
-        return torch.cat([p.view(-1) for p in self.model.parameters()], 0)
+        return torch.cat(
+            [p.view(-1) for p in self.model.parameters()], 0)
 
     def copy_flat_params(self, cI):
         idx = 0

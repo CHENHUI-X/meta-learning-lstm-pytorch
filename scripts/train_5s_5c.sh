@@ -20,6 +20,7 @@ python main.py --mode train \
                --bn-eps 1e-3 \
                --data miniimagenet \
                --data-root data/miniImagenet/ \
+               --cpu  \
                --pin-mem True \
-               --log-freq 50 \
+               --log-freq 1 \
                --val-freq 1000

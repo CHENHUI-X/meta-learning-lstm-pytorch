@@ -126,5 +126,6 @@ def preprocess_grad_loss(x):
     x_proc1 = indicator * torch.log(x.abs() + 1e-8) / p + (1 - indicator) * -1
     # preproc2
     x_proc2 = indicator * torch.sign(x) + (1 - indicator) * np.exp(p) * x
+
     return torch.stack((x_proc1, x_proc2), 1)
 
