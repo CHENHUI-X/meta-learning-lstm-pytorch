@@ -249,10 +249,13 @@ def main():
         learner_wo_grad.transfer_params(learner_w_grad, cI)
         # 将learner更新多轮后的参数赋值给结构完全和learner一样的架构
         # 这么做是因为,meta-learner在更新learner ( learner_w_grad) 的过程中是参与了运算的
-        # 如果用learner_w_grad的输出去计算loss,然后反向传播
+        # 如果用learner_w_grad的输出去计算loss,然后反向传播,这样会比较复杂,就会把train learner过程中的gradient传播回去
+        # 而如果在train完learner(即learner_w_grad)后,使用learner_wo_grad copy parameter from learner_w_grad ,
+        # 那这时learner_wo_grad内部的参数是不具有历史信息的,接着使用learner_wo_grad去test_input上计算loss,
+        # 反向传播,那这时的梯度信息仅仅来源于测试的时候的loss,避免了training loss的反向传播
 
-        output = learner_wo_grad(test_input)
-        loss = learner_wo_grad.criterion(output, test_target)
+        output = learner_wo_grad(test_input)  # learner_wo_grad 在 testdata上测试
+        loss = learner_wo_grad.criterion(output, test_target) # 仅使用测试集上的loss去更新meta-learner
         acc = accuracy(output, test_target)
         
         optim.zero_grad()
