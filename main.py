@@ -230,8 +230,8 @@ def main():
         we need reset the batch norm statistics 
         
         '''
-        learner_w_grad.reset_batch_stats()
-        learner_wo_grad.reset_batch_stats()
+        learner_w_grad.reset_batch_stats() # 每个大循环要把batch信息刷新是因为,用之前的batch信息一方面可能导致信息泄露,
+        learner_wo_grad.reset_batch_stats() # 另一方面这数据也不准,大循环随机抽取的train data 类型差别可能比较大
 
         learner_w_grad.train()
         learner_wo_grad.train()
@@ -251,8 +251,13 @@ def main():
         # 这么做是因为,meta-learner在更新learner ( learner_w_grad) 的过程中是参与了运算的
         # 如果用learner_w_grad的输出去计算loss,然后反向传播,这样会比较复杂,就会把train learner过程中的gradient传播回去
         # 而如果在train完learner(即learner_w_grad)后,使用learner_wo_grad copy parameter from learner_w_grad ,
-        # 那这时learner_wo_grad内部的参数是不具有历史信息的,接着使用learner_wo_grad去test_input上计算loss,
+        # 那这时learner_wo_grad内部的参数是不具有历史信息的
+        # (只保留最后一次信息: Theta_T,即当前参数,来自meta-learner,这样正好把meta-learner在计算图上连接起来)
+        # 接着使用learner_wo_grad去test_input上计算loss,
         # 反向传播,那这时的梯度信息仅仅来源于测试的时候的loss,避免了training loss的反向传播
+        # 同时learner_wo_grad 中的参数 用tensor类型 替换了 learner_w_grad 的 parameter类型参数 ,
+        # 避免了在更新meta-learner的时候, 梯度在训练好的learner(learner_wo_grad)上无谓更新.
+        # 即只更新meta-learner的参数
 
         output = learner_wo_grad(test_input)  # learner_wo_grad 在 testdata上测试
         loss = learner_wo_grad.criterion(output, test_target) # 仅使用测试集上的loss去更新meta-learner
@@ -261,7 +266,7 @@ def main():
         optim.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(metalearner.parameters(), args.grad_clip) # clip the gradient
-        optim.step()
+        optim.step() #
 
         logger.batch_info(eps=eps, totaleps=args.episode, loss=loss.item(), acc=acc, phase='train')
 
