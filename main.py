@@ -119,7 +119,7 @@ def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
             loss = learner_w_grad.criterion(output, y)
             acc = accuracy(output, y)
             learner_w_grad.zero_grad() #
-            loss.backward()
+            loss.backward() # 注意这里仅仅反向传播计算gradient,并没有执行任何的update parameter过程
 
             # parameter gradient  of learner
             grad = torch.cat(
@@ -247,17 +247,56 @@ def main():
 
         # Train meta-learner with validation loss
         learner_wo_grad.transfer_params(learner_w_grad, cI)
-        # 将learner更新多轮后的参数赋值给结构完全和learner一样的架构
-        # 这么做是因为,meta-learner在更新learner ( learner_w_grad) 的过程中是参与了运算的
-        # 如果用learner_w_grad的输出去计算loss,然后反向传播,这样会比较复杂,就会把train learner过程中的gradient传播回去
-        # 而如果在train完learner(即learner_w_grad)后,使用learner_wo_grad copy parameter from learner_w_grad ,
-        # 那这时learner_wo_grad内部的参数是不具有历史信息的
-        # (只保留最后一次信息: Theta_T,即当前参数,来自meta-learner,这样正好把meta-learner在计算图上连接起来)
-        # 接着使用learner_wo_grad去test_input上计算loss,
-        # 反向传播,那这时的梯度信息仅仅来源于测试的时候的loss,避免了training loss的反向传播
-        # 同时learner_wo_grad 中的参数 用tensor类型 替换了 learner_w_grad 的 parameter类型参数 ,
-        # 避免了在更新meta-learner的时候, 梯度在训练好的learner(learner_wo_grad)上无谓更新.
-        # 即只更新meta-learner的参数
+        '''
+            将learner更新多轮后的参数赋值给结构完全和learner一样的架构.
+            这么做是因为,meta-learner在更新learner ( learner_w_grad) 的过程中是参与了运算的
+            如果用learner_w_grad每次的输出去计算loss,然后反向传播,这样会比较复杂,
+            就会把train learner过程中的gradient传播回去,需要计算二阶导
+            所以在train完learner(即learner_w_grad)后,令learner_wo_grad 调用transfer_params 函数, 
+            把learner最新的参数复制过来那这时 , learner_wo_grad内部的参数是不具有历史信息的
+            具体可见:https://androidkt.com/copy-pytorch-model-using-deepcopy-and-state_dict/
+            
+                # a
+                # Out[143]: tensor([2., 3.], requires_grad=True)
+                # b
+                # Out[144]: tensor([6., 4.], requires_grad=True)
+                # model.state_dict()
+                # Out[145]: 
+                # OrderedDict([('weight', tensor([[-0.6795, -0.0612]])),
+                #  ('bias', tensor([0.1080]))])
+                # y = model(a)**2 + model(b)**2
+                # y
+                # Out[147]: tensor([19.8124], grad_fn=<AddBackward0>)
+                # y.backward()
+                # a
+                # Out[149]: tensor([2., 3.], requires_grad=True)
+                # a.grad
+                # Out[150]: tensor([5.9495, 6.1756])
+                # b.grad
+                # Out[151]: tensor([17.7260,  8.5157])
+                # model.weight
+                # Out[152]: 
+                # Parameter containing:
+                # tensor([[-0.6795, -0.0612]], requires_grad=True)
+                # model.weight.grad
+                # Out[153]: tensor([[-56.3015, -42.3162]])
+                # model.bias.grad
+                # Out[154]: tensor([-11.2963])
+                # import copy
+                # model_copy = copy.deepcopy(model)
+                # model_copy
+                # Out[157]: Linear(in_features=2, out_features=1, bias=True)
+                # model_copy.weight.grad
+                # 输出为空
+            
+            因此,这时copy的model是不包含之前learner的历史信息的
+            只是起到将meta-learner 连接起来的作用.
+            然后又把copy的model中的参数 用最后一次在训练集上的CI 进行初始化,
+            这样就通过CI 将测试集的loss和meta-learner连接起来
+            接着使用learner_wo_grad去test_input上计算loss,反向传播,
+            实现只用测试集loss更新meta-learner
+        '''
+
 
         output = learner_wo_grad(test_input)  # learner_wo_grad 在 testdata上测试
         loss = learner_wo_grad.criterion(output, test_target) # 仅使用测试集上的loss去更新meta-learner

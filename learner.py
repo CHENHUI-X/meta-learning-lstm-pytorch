@@ -64,7 +64,20 @@ class Learner(nn.Module):
         # Use load_state_dict only to copy the running mean/var in batchnorm, the values of the parameters
         #  are going to be replaced by cI
         self.load_state_dict(learner_w_grad.state_dict())
-        #  replace nn.Parameters with tensors from cI (NOT nn.Parameters anymore).
+        #  replace nn.Parameters with tensors from cI (tensor类型, NOT nn.Parameters anymore).
+        # learner_wo_grad 中的参数 用tensor类型 替换了 learner_w_grad 的 parameter类型参数
+        # 而view 或者 view_as 是不保留梯度的
+        '''
+            input = torch.tensor([2., 3.], requires_grad=True)
+            output = input**2
+            output.sum().backward()
+            input.grad
+            Out[194]: tensor([4., 6.])
+            input_view = input.view(input.shape)
+            input_view.grad # 报错,显示input_view不是计算图的叶子结点,没有gradient信息
+        
+        
+        '''
         idx = 0
         for m in self.model.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.Linear):
