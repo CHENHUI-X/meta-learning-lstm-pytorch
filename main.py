@@ -138,7 +138,7 @@ def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
             # hs[-1] : [f_prev, i_prev, c_prev] -> meta-learner的上一次相关输出
             hs.append(h)
 
-            #print("training loss: {:8.6f} acc: {:6.3f}, mean grad: {:8.6f}".format(loss, acc, torch.mean(grad)))
+            # print("training loss: {:8.6f} acc: {:6.3f}, mean grad: {:8.6f}".format(loss, acc, torch.mean(grad)))
 
     return cI
 
@@ -213,6 +213,10 @@ def main():
         # 表示每次大循环 使用25张image去train learner,然后计算在剩下75张image上的loss,根据loss更新meat-learner
 
         print(eps, episode_x.shape, train_input.shape)
+
+        # 反而是先在下边计算了loss,输出了loss, 好像跳过了上边的语句
+        # 然后50个epoch后,统一输出了前50次input的shape
+        # print(loss)
 
         train_target = torch.LongTensor(np.repeat(range(args.n_class), args.n_shot)).to(args.dev)
         # [n_class * n_shot]
@@ -295,10 +299,13 @@ def main():
             这样就通过CI 将测试集的loss和meta-learner连接起来
             接着使用learner_wo_grad去test_input上计算loss,反向传播,
             实现只用测试集loss更新meta-learner
+            
         '''
 
-
         output = learner_wo_grad(test_input)  # learner_wo_grad 在 testdata上测试
+        # 注意这里learner_wo_grad虽然是在"测试",但是属于大循环training meta-learner的
+        # 一步,因此这时的参数还是需要计算梯度的,才能后边将loss经过learner_wo_grad传到SLTM
+        # 因此这里不设置   learner_wo_grad.eval()
         loss = learner_wo_grad.criterion(output, test_target) # 仅使用测试集上的loss去更新meta-learner
         acc = accuracy(output, test_target)
         

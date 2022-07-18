@@ -11,9 +11,10 @@ import numpy as np
 class GOATLogger:
 
     def __init__(self, args):
+        # save location dictionary
         args.save = args.save + '-{}'.format(args.seed)
 
-        self.mode = args.mode
+        self.mode = args.mode # train or test
         self.save_root = args.save
         self.log_freq = args.log_freq
 
