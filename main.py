@@ -78,8 +78,14 @@ FLAGS.add_argument('--seed', type=int,
 
 def meta_test(eps, eval_loader, learner_w_grad, learner_wo_grad, metalearner, args, logger):
     for subeps, (episode_x, episode_y) in enumerate(tqdm(eval_loader, ascii=True)):
+        # 根据args.episode_val指定的次数,总共从数据中抽args.episode_val次,每次args.num_class个类别的数据
+        # 每个类再相应抽 n_shot + n_eval ,其中每个类中的n_shot个图片用作测试集的训练集上的loss
+        # 去更新meta-learner
         train_input = episode_x[:, :args.n_shot].reshape(-1, *episode_x.shape[-3:]).to(args.dev) # [n_class * n_shot, :]
         train_target = torch.LongTensor(np.repeat(range(args.n_class), args.n_shot)).to(args.dev) # [n_class * n_shot]
+        # 测试集的训练集,用来计算这个special task 上learner的loss,然后计算得到相应
+        # 属于这个special task的meta-learner的CI参数,然后最后用CI初始化属于
+        # 这个task的learner,然后在这个测试集的测试集上计算loss性能.
         test_input = episode_x[:, args.n_shot:].reshape(-1, *episode_x.shape[-3:]).to(args.dev) # [n_class * n_eval, :]
         test_target = torch.LongTensor(np.repeat(range(args.n_class), args.n_eval)).to(args.dev) # [n_class * n_eval]
 
@@ -88,7 +94,8 @@ def meta_test(eps, eval_loader, learner_w_grad, learner_wo_grad, metalearner, ar
         learner_wo_grad.reset_batch_stats()
         learner_w_grad.train()
         learner_wo_grad.eval()
-        # get  parameter of learner of special task
+        # here parameter of meta-learner  is fixed
+        # just used to calculate CI ,that's  parameter of learner of special task
         cI = train_learner(learner_w_grad, metalearner, train_input, train_target, args)
 
         # Initialize the parameter of learner of special task from meta-learner
@@ -103,8 +110,12 @@ def meta_test(eps, eval_loader, learner_w_grad, learner_wo_grad, metalearner, ar
 
 
 def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
-    cI = metalearner.metalstm.cI.data  #  Initialize for  learner in this loop
+    cI = metalearner.metalstm.cI.data
+    #  Initialize parameter form last meta-learner  for  learner in this loop
+    #  每次大循环一次,meta-learner的
     hs = [None]
+    # 每次在大循环调用train_learner,都要初始化一下属于每次大循环的数据的初始隐状态
+    # 这是因为每个大循环用到的数据类别不一样,产生的hidden state不能互相传递
     for _ in range(args.epoch):
         for i in range(0, len(train_input), args.batch_size):
             # batchsize = 25
@@ -138,7 +149,7 @@ def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
             # hs[-1] : [f_prev, i_prev, c_prev] -> meta-learner的上一次相关输出
             hs.append(h)
 
-            # print("training loss: {:8.6f} acc: {:6.3f}, mean grad: {:8.6f}".format(loss, acc, torch.mean(grad)))
+            print("training loss: {:8.6f} acc: {:6.3f}, mean grad: {:8.6f}".format(loss, acc, torch.mean(grad)))
 
     return cI
 
@@ -214,10 +225,6 @@ def main():
 
         print(eps, episode_x.shape, train_input.shape)
 
-        # 反而是先在下边计算了loss,输出了loss, 好像跳过了上边的语句
-        # 然后50个epoch后,统一输出了前50次input的shape
-        # print(loss)
-
         train_target = torch.LongTensor(np.repeat(range(args.n_class), args.n_shot)).to(args.dev)
         # [n_class * n_shot]
         # flatten the label  row by row , so now target is like this
@@ -234,8 +241,10 @@ def main():
         we need reset the batch norm statistics 
         
         '''
-        learner_w_grad.reset_batch_stats() # 每个大循环要把batch信息刷新是因为,用之前的batch信息一方面可能导致信息泄露,
-        learner_wo_grad.reset_batch_stats() # 另一方面这数据也不准,大循环随机抽取的train data 类型差别可能比较大
+        learner_w_grad.reset_batch_stats()
+        # 每个大循环要把内部learner的batch信息刷新是因为,用之前的batch信息一方面可能导致信息泄露,
+        learner_wo_grad.reset_batch_stats()
+        # 另一方面这数据也不准,大循环随机抽取的train data 类型差别可能比较大
 
         learner_w_grad.train()
         learner_wo_grad.train()
@@ -248,6 +257,12 @@ def main():
         # 但是一般情况下, eval就够了.反正也不执行loss.backward()
 
         cI = train_learner(learner_w_grad, metalearner, train_input, train_target, args)
+        # 这learner_w_grad在里边也是被meta-learner的输出调整过了参数
+        # 但是每次在进入train_learner的第一句话,就是从meta-learner读取初始CI
+        # 然后循环的时候先把初始CI复制给learner_w_grad,这样就实现了,每次大循环
+        # 的learner_w_grad初始参数都是meta-learner的初始CI(这个值从来没有变过)
+        # 每次大循环变得只是meta-learner内部的参数
+
 
         # Train meta-learner with validation loss
         learner_wo_grad.transfer_params(learner_w_grad, cI)
@@ -314,15 +329,19 @@ def main():
         nn.utils.clip_grad_norm_(metalearner.parameters(), args.grad_clip) # clip the gradient
         optim.step() #
 
-        logger.batch_info(eps=eps, totaleps=args.episode, loss=loss.item(), acc=acc, phase='train')
+        # logger.batch_info(eps=eps, totaleps=args.episode, loss=loss.item(), acc=acc, phase='train')
 
-        # Meta-validation
-        if eps % args.val_freq == 0 and eps != 0:
-            save_ckpt(eps, metalearner, optim, args.save)
-            acc = meta_test(eps, val_loader, learner_w_grad, learner_wo_grad, metalearner, args, logger)
-            if acc > best_acc:
-                best_acc = acc
-                logger.loginfo("* Best accuracy so far *\n")
+        # # Meta-validation
+        # if eps % args.val_freq == 0 and eps != 0:
+        #     save_ckpt(eps, metalearner, optim, args.save)
+        #
+        #     acc = meta_test(
+        #         eps, val_loader, learner_w_grad, learner_wo_grad,
+        #         metalearner, args, logger
+        #     )
+        #     if acc > best_acc:
+        #         best_acc = acc
+        #         logger.loginfo("* Best accuracy so far *\n")
 
     logger.loginfo("Done")
 
