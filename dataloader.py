@@ -31,25 +31,28 @@ class EpisodeDataset(data.Dataset):
         root = os.path.join(root, phase)
 
         # all labels name in train
-        self.labels = sorted(os.listdir(root))
+        self.labels = sorted(os.listdir(root)) # like [ 'n01532829','n01558993',....]
 
         # all images path fot per class
         images = [glob.glob(os.path.join(root, label, '*')) for label in self.labels]
+        # 列表套列表,每个小列表是该类别所有的图片
 
+        self.episode_loader = [data.DataLoader(
+            ClassDataset(images = images[idx], label = idx, transform=transform),
+            batch_size= n_shot + n_eval, shuffle=True, num_workers=0) for idx, _ in enumerate(self.labels)]
         # 列表中的每个元素是一个data.DataLoader,
         # 每次(共n_episode次)外循环(meta-learner)随机抽n_class个类别index
         # 然后从当前列表(episode_loader)抽出对应index的loader,
         # 每个loader 再分别在自己所属的类别中随机抽 batchsize 个样本
-        self.episode_loader = [data.DataLoader(
-            ClassDataset(images = images[idx], label = idx, transform=transform),
-            batch_size= n_shot + n_eval, shuffle=True, num_workers=0) for idx, _ in enumerate(self.labels)]
+
         # 而且这里列表里边的data.dataloader看起来像是递归的那种, 其实真的就只是在每个大循环被调用一次,
         # 不是说其能够在train learner的时候,自动从大循环固定的10个类别中数据中,每次抽batchsize个图片并把这10个类别中
-        # 每个类别的600个图片取遍,不是这样的. 这样写只是说下次取的时候能够自动实现shuffle,num_works等.
-        # 实际上,上边的dataloader真就是每次大循环就调用一次,episode_loader负责10个类,ClassDataset的这个dataloader
-        # 负责每个类里边随机抽batchsize张image,比如batchsize = n_train(5) + n_eval(5) = 10
+        # 每个类别的600个图片取遍,NO NO NO. 这样写只是说下次取的时候能够自动实现shuffle,num_works等.
+        # 实际上,上边的dataloader真就是每次大循环就调用一次,episode_loader负责取10个类,ClassDataset的这个dataloader
+        # 负责 每个类里边随机抽 batchsize 张image,比如 batchsize = n_train(5) + n_eval(5) = 10
         # 那么一整次大循环,真就只使用这10*10 = 100张图片去完成一次大循环:50张去更新learner,剩下50张计算learner的loss
         # 然后去更新大循环的meta-learner. 不要被这里的递归写法误导
+
     def __getitem__(self, idx):
         return next(iter(self.episode_loader[idx]))
         # 返回的元素是一个对应类别为idx的dataloader
@@ -106,12 +109,14 @@ class EpisodicSampler(data.Sampler):
 
 def prepare_data(args):
 
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     # 从train文件夹内读取图片
     # EpisodeDataset继承于data.Dataset，是一个dataloader，负责读取不同类别
     # 每次返回的一个元素也是dataloader，这个loader负责读取相应类别内的图片
     # 也就是说train_set 这时是一个dataloader , 一个专门返回meta-train的数据
-    train_set = EpisodeDataset(args.data_root, 'train', args.n_shot, args.n_eval,
+    train_set = EpisodeDataset(
+        args.data_root, 'train', args.n_shot, args.n_eval,
         transform=transforms.Compose([
             transforms.RandomResizedCrop(args.image_size),
             transforms.RandomHorizontalFlip(),

@@ -5,6 +5,7 @@ import pdb
 import copy
 import random
 import argparse
+from argparse import ArgumentParser
 
 import torch
 import torch.nn as nn
@@ -92,7 +93,7 @@ def meta_test(eps, eval_loader, learner_w_grad, learner_wo_grad, metalearner, ar
         # Train learner with metalearner
         learner_w_grad.reset_batch_stats()
         learner_wo_grad.reset_batch_stats()
-        learner_w_grad.train()
+        learner_w_grad.train_and_val()
         learner_wo_grad.eval()
         # here parameter of meta-learner  is fixed
         # just used to calculate CI ,that's  parameter of learner of special task
@@ -115,7 +116,7 @@ def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
     #  每次大循环一次,meta-learner的
     hs = [None]
     # 每次在大循环调用train_learner,都要初始化一下属于每次大循环的数据的初始隐状态
-    # 这是因为每个大循环用到的数据类别不一样,产生的hidden state不能互相传递
+    # 这是因为每个大循环(eposide)用到的数据类别不一样,产生的hidden state不能互相传递
     for _ in range(args.epoch):
         for i in range(0, len(train_input), args.batch_size):
             # batchsize = 25
@@ -126,13 +127,13 @@ def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
             learner_w_grad.copy_flat_params(cI)
             # 使用进过meta-learn计算过的CI作为learner的新一次parameter
 
-            output = learner_w_grad(x) # class prediction
+            output = learner_w_grad(x) # class prediction use learner
             loss = learner_w_grad.criterion(output, y)
             acc = accuracy(output, y)
-            learner_w_grad.zero_grad() #
+            learner_w_grad.zero_grad()
             loss.backward() # 注意这里仅仅反向传播计算gradient,并没有执行任何的update parameter过程
 
-            # parameter gradient  of learner
+            # parameter  gradient  of learner
             grad = torch.cat(
                 [p.grad.data.view(-1) / args.batch_size for p in learner_w_grad.parameters()], 0
             )
@@ -143,10 +144,19 @@ def train_learner(learner_w_grad, metalearner, train_input, train_target, args):
 
             # parameter gradient  of learner
             loss_prep = preprocess_grad_loss(loss.data.unsqueeze(0)) # [1, 2] # 同理
-            metalearner_input = [loss_prep, grad_prep, grad.unsqueeze(1)] #
+
+            metalearner_input = [loss_prep, grad_prep, grad.unsqueeze(1)]
 
             cI, h = metalearner(inputs = metalearner_input, hs = hs[-1])
-            # hs[-1] : [f_prev, i_prev, c_prev] -> meta-learner的上一次相关输出
+            # here just used metalearner to update CI that parameter of learner,
+            # do not modified parameter of metalearner
+
+            # 返回的 h 包含 2 部分 : [(lstmhx,  lstmcx), metalstm_hs],
+            # 前一项是LSTMcell输出的并行隐状态和state ,用于保留参数的上一次信息,
+            # 后一项是METALSTMcell的隐状态,用于下一次所有
+
+
+
             hs.append(h)
 
             print("training loss: {:8.6f} acc: {:6.3f}, mean grad: {:8.6f}".format(loss, acc, torch.mean(grad)))
@@ -182,11 +192,13 @@ def main():
     train_loader, val_loader, test_loader = prepare_data(args)
     
     # 初始化 learner, meta-learner , 这时两个model内部的参数已经默认初始化过了
-    learner_w_grad = Learner(args.image_size, args.bn_eps, args.bn_momentum, args.n_class).to(args.dev)
+    learner_w_grad = Learner(
+        args.image_size, args.bn_eps, args.bn_momentum, args.n_class).to(args.dev)
     # Note : here learner_w_grad just the model of learner
     # it used to store status of parameters , special that's batchnorm values
     learner_wo_grad = copy.deepcopy(learner_w_grad)  # 拷贝对象及其子对象
-    # why need deep cpoy : https://androidkt.com/copy-pytorch-model-using-deepcopy-and-state_dict/
+    # why need deep cpoy :
+    #   https://androidkt.com/copy-pytorch-model-using-deepcopy-and-state_dict/
     '''
     The deepcopy will recursively copy every member of an object, 
     so it copies everything. It makes a deep copy of the original tensor 
@@ -195,7 +207,9 @@ def main():
     as you cannot call copy.deepcopy on a non-leaf tensor.
     '''
 
-    metalearner = MetaLearner(args.input_size, args.hidden_size, learner_w_grad.get_flat_params().size(0)).to(args.dev)
+    metalearner = MetaLearner(
+        args.input_size, args.hidden_size, learner_w_grad.get_flat_params().size(0)
+    ).to(args.dev)
 
     # CI  is the output of lstm meta-learner , and it's also the parameter of learner
     metalearner.metalstm.init_cI(learner_w_grad.get_flat_params())
@@ -223,13 +237,14 @@ def main():
         # [n_class * n_shot, :] , 初始参数为n_class = 5 , n_shot = 5 ,n_eval = 15
         # 表示每次大循环 使用25张image去train learner,然后计算在剩下75张image上的loss,根据loss更新meat-learner
 
-        print(eps, episode_x.shape, train_input.shape)
-
-        train_target = torch.LongTensor(np.repeat(range(args.n_class), args.n_shot)).to(args.dev)
+        train_target = torch.LongTensor(
+            np.repeat(range(args.n_class), args.n_shot)
+        ).to(args.dev)
         # [n_class * n_shot]
         # flatten the label  row by row , so now target is like this
         # np.repeat(range(3),3) : array([0, 0, 0, 1, 1, 1, 2, 2, 2])
         # used to calculate loss , then for  update meta-learner
+        # 因为 每个大的episode(外循环)每次只抽5个类,下次大循环又是新的5个类,所以train 的时候直接都用1-5类表示
         test_input = episode_x[:, args.n_shot:].reshape(-1, *episode_x.shape[-3:]).to(args.dev) # [n_class * n_eval, :]
         test_target = torch.LongTensor(np.repeat(range(args.n_class), args.n_eval)).to(args.dev) # [n_class * n_eval]
 
@@ -244,7 +259,7 @@ def main():
         learner_w_grad.reset_batch_stats()
         # 每个大循环要把内部learner的batch信息刷新是因为,用之前的batch信息一方面可能导致信息泄露,
         learner_wo_grad.reset_batch_stats()
-        # 另一方面这数据也不准,大循环随机抽取的train data 类型差别可能比较大
+        # 另一方面这数据也不准,大循环随机抽取的数据所属类别 差别可能比较大
 
         learner_w_grad.train()
         learner_wo_grad.train()
@@ -252,13 +267,14 @@ def main():
         # eval 影响的是一些层,比如dropout,batch等,对于dropout层,
         # train的时候,有p的unit是随机失活的,而eval的时候是全部神经元都用的.
         # 此外batch values是train的时候是随批次变的,而eval的时候用的train的均值.
-        # 但是eval不影响自动梯度的计算,(这会导致一些内存和时间的增加),这时候就需要
-        # with torch.no_gard()代码块,冻结各层,不自动计算局部梯度.
+        # 但是eval仍然会自动梯度的计算,(这会导致一些内存和时间的增加),但是不会反向传播
+
+        # 这时候就需要, with torch.no_gard()代码块,冻结各层,不自动计算局部梯度.
         # 但是一般情况下, eval就够了.反正也不执行loss.backward()
 
         cI = train_learner(learner_w_grad, metalearner, train_input, train_target, args)
         # 这learner_w_grad在里边也是被meta-learner的输出调整过了参数
-        # 但是每次在进入train_learner的第一句话,就是从meta-learner读取初始CI
+        # 每次在进入train_learner的第一句话,就是从meta-learner读取初始CI
         # 然后循环的时候先把初始CI复制给learner_w_grad,这样就实现了,每次大循环
         # 的learner_w_grad初始参数都是meta-learner的初始CI(这个值从来没有变过)
         # 每次大循环变得只是meta-learner内部的参数
@@ -327,7 +343,7 @@ def main():
         optim.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(metalearner.parameters(), args.grad_clip) # clip the gradient
-        optim.step() #
+        optim.step() # update the metalearner parameters
 
         # logger.batch_info(eps=eps, totaleps=args.episode, loss=loss.item(), acc=acc, phase='train')
 

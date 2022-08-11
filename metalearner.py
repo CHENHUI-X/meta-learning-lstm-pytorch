@@ -41,17 +41,9 @@ class MetaLSTMCell(nn.Module):
 
     def forward(self, inputs, hs = None): # [lstmhx, grad] , [ metalstm_fn, metalstm_in, metalstm_cn]
         """Args:
+            input hs :
+             [(lstmhx, lstmcx), metalstm_hs][-1] -> metalstm_hs -> [f_prev, i_prev, c_prev]:
 
-        # 合并起来作为下一个meta-LSTM的输入
-        #  hs[1] : [ metalstm_fn, metalstm_in, metalstm_cn]
-            inputs = [x_all, grad] <=> [ lstmhx , grad ]
-                #  lstmhx : 上一层LSTMcell的输出(shape:(n_par,input_size))
-                            每个参数分别对应input_size个值 ,
-                            这input_size个值又是由(processed_grad(2列),processed_loss(2列))得到的
-
-                #   grad  : 参数的梯度(shape:(n_par,1)), 每个参数分别对应一个值
-
-            hs = [f_prev, i_prev, c_prev]:
                 # [f_prev, i_prev, c_prev] <=> [ metalstm_fn, metalstm_in, metalstm_cn]
 
                 f (torch.Tensor of size [n_learner_params, 1]): forget gate
@@ -61,9 +53,15 @@ class MetaLSTMCell(nn.Module):
                 # where in paper like a learning rate
 
                 c (torch.Tensor of size [n_learner_params, 1]): flattened learner parameters
+
+            inputs : [x_all, grad] <=>  [loss_prep, grad_prep, grad.unsqueeze(1)]
+                #  x_all : processed_grad(2列),processed_loss(2列)
+                #   grad  : 参数的梯度(shape:(n_par,1)), 每个参数分别对应一个值
+
+
         """
         x_all, grad = inputs
-        #  x_all : 就是lstmhx , 即上一层LSTMcell的输出(shape:(n_par,input_size))
+        #  processed_grad(2列),processed_loss(2列)
 
         batch, _ = x_all.size()
 
@@ -85,6 +83,7 @@ class MetaLSTMCell(nn.Module):
 
         return c_next, [f_next, i_next, c_next] # hs
 
+
     def extra_repr(self):
         s = '{input_size}, {hidden_size}, {n_learner_params}'
         return s.format(**self.__dict__)
@@ -99,21 +98,27 @@ class MetaLearner(nn.Module):
             hidden_size (int): for the first LSTM layer, default = 20
             n_learner_params (int): number of learner's parameters
         """
-        self.lstm = nn.LSTMCell(input_size=input_size, hidden_size=hidden_size)
-        self.metalstm = MetaLSTMCell(input_size=hidden_size, hidden_size=1, n_learner_params=n_learner_params)
+        self.lstm = nn.LSTMCell(
+            input_size=input_size, hidden_size=hidden_size)
+
+        self.metalstm = MetaLSTMCell(
+            input_size = hidden_size , hidden_size = 1, n_learner_params = n_learner_params)
 
     def forward(self, inputs, hs=None):
         """Args:
             inputs = [loss, grad_prep, grad]
                 loss (torch.Tensor of size [1, 2])
+                        ---- that's [( log(|loss|)/p,sgn(loss) ) ,(-1,exp(p)*loss) ] in original paper
                 grad_prep (torch.Tensor of size [n_learner_params, 2])
+                        ----  that's [( log(|grad|)/p,sgn(grad) ) ,(-1,exp(p)*grad) ] in original paper
+
                 grad (torch.Tensor of size [n_learner_params])
 
             hs = [ (lstm_hn, lstm_cn) , [metalstm_fn, metalstm_in, metalstm_cn]]
 
         """
         loss, grad_prep, grad = inputs # unzip the input
-        loss = loss.expand_as(grad_prep)
+        loss = loss.expand_as(grad_prep) # 扩展行数 与 参数数目相同
         inputs = torch.cat((loss, grad_prep), 1) # (处理后的grad(两列),处理后的loss(两列))
         # input for lstm : [n_learner_params, 4]
 
@@ -128,23 +133,22 @@ class MetaLearner(nn.Module):
         # 但是这样是不可行的,数量太大,因此才想到把所有参数集中到一个序列中,(seq长度为参数个数,每个参数shape为(1,4))
         # 但是这样的话有个问题,就是learner的参数是独立的,即:
         # 第二个参数输出不应该用到由第一个参数生成的隐状态,而是应该用到第二个参数上一次更新产生的隐状态,
-        # 这样的话,就需要每次在更新参数时,用自己之前产生的隐状态,而不是其他参数的,所以每次更新都要记录相应参数的隐状态.
-        # 同理,每个参数要用到自己上一次更新的参数,而不是上一个参数的结果.
+        # 这样的话,就需要每次在更新参数时,用自己之前产生的隐状态,而不是其他参数的,
+        # 所以参数 a 每次更新 a(t) 都要记录相应参数的隐状态 a_h(t), 用于 参数a的a(t+1)更新,.
+
         # (区分上一次指的是自己的,上一个指的是另一个参数,按序列顺序)
 
         if hs is None:
             hs = [None, None]
+        # else hs is [(lstmhx, lstmcx), metalstm_hs] from previous out of lstm
 
         lstmhx, lstmcx = self.lstm(inputs, hs[0])
+        # print('------------' ,lstmhx.shape,lstmcx.shape)
         # input: [loss(2列), grad_prep(2列)] , 每行属于一个参数 and [h_t-1 , c_t-1],共num_par行
-        # output : 每行分别为learner的参数在LSTMCell的隐状态(即输出)
-        # 输出的shape : ( num_par , hiddensize)
-        #  lstmhx : 上一层LSTMcell的输出(shape:(n_par,input_size))
-        # 每个参数分别对应input_size个值,这input_size个值又是
-        # 由(processed_grad(2列), processed_loss(2列))得到的
+        # output : 每行分别为learner的参数在LSTMCell的隐状态(即输出) 以及 相应的 memory state
+        # LSTMCell() 是平行的把序列中的所有元素分别输入到model,然后平行的输出来,并不是LSTM那种递归的.
+        # 输出的shape -  lstmhx : ( num_par , hiddensize) , lstmcx : ( num_par , hiddensize)
 
-        # 因为上边的lstm用的是LSTMCell,然后hiddenstate 和 cellstate 用的是同一个
-        # 因此对于所有的参数(input),除了参数本身数据不一样以外,LSTMCELL内部 其他参数都是一样的
         '''
         rnn = nn.LSTMCell(2,3)
         input = torch.Tensor([[1,2],[1,2],[1,2]]).reshape(-1,2)
@@ -160,10 +164,21 @@ class MetaLearner(nn.Module):
         第一个输入的结果不影响第二个输出
         '''
         flat_learner_unsqzd, metalstm_hs = self.metalstm([lstmhx, grad], hs[1])
-        #  lstmhx : 上一层LSTMcell的输出(shape:(n_par,input_size)) : 每个参数分别对应input_size个值
-        #   grad  : 参数的梯度(shape:(n_par,1)), 每个参数分别对应一个值
-        # 合并起来作为下一个meta-LSTM的输入
-        #  hs[1] : [ metalstm_fn, metalstm_in, metalstm_cn]
+        #  lstmhx : 上一个LSTMcell的输出(shape:(n_par,hiddensize)) :
+        #               每个参数分别对应 hiddensize 个值 , 保留了每个参数的历史信息
+        #   grad  : 参数的梯度(shape:(n_par,1)), 每个参数分别对应一个值 , 保留了每个参数的历史信息
+
+        #  hs[1] - > metalstm_hs : [f_next, i_next, c_next]
+
+        # [lstmhx, grad], hs[1]  整体,结合了所有参数的隐状态,还有METALSTMcell的一个综合的隐状态
+        # 计算下一次的[f_next, i_next, c_next]
+
+        # 就是两个lstm,一个是lstmcell,一个是正常的lstm,即METAlstmcell ,
+        # 其中lstmcell负责并行的保留每个参数的上一次状态,
+        # 即METAlstmcell , 大家还是共用了隐状态去计算下一次的 f ,i ,c等
+
+        # 输出 flat_learner_unsqzd : 就是 c_next
+
 
         return flat_learner_unsqzd.squeeze(), [(lstmhx, lstmcx), metalstm_hs]
 

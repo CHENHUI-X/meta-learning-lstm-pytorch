@@ -51,7 +51,8 @@ class Learner(nn.Module):
 
     def get_flat_params(self):
         return torch.cat(
-            [p.view(-1) for p in self.model.parameters()], 0)
+            [p.view(-1) for p in self.model.parameters()], 0)\
+        # stack parameters along axis 0
 
     def copy_flat_params(self, cI):
         idx = 0
@@ -61,8 +62,8 @@ class Learner(nn.Module):
             idx += plen
 
     def transfer_params(self, learner_w_grad, cI):
-        # Use load_state_dict only to copy the running mean/var in batchnorm, the values of the parameters
-        #  are going to be replaced by cI
+        # Use load_state_dict only to copy the running mean/var in batchnorm,
+        # the values of the parameters are going to be replaced by cI
         self.load_state_dict(learner_w_grad.state_dict())
         #  replace nn.Parameters with tensors from cI (tensor类型, NOT nn.Parameters anymore).
         # learner_wo_grad 中的参数 用tensor类型 替换了 learner_w_grad 的 parameter类型参数
